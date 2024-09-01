@@ -327,7 +327,10 @@ func (kc *Client) loadChallengePage(submitURL string, referer string, authForm u
 	secondFactorHeaderJp := "2 段階認証プロセス"
 
 	// have we been asked for 2-Step Verification
-	if extractNodeText(doc, "h2", secondFactorHeader) != "" ||
+	logger.Debugf("on challenge page")
+	if extractNodeText(doc, "h2", "Choose how you want to sign in:") != "" {
+		return kc.loadChallengeEntryPage(doc, submitURL, loginDetails)
+	} else if extractNodeText(doc, "h2", secondFactorHeader) != "" ||
 		extractNodeText(doc, "h2", secondFactorHeader2) != "" ||
 		extractNodeText(doc, "h1", secondFactorHeader3) != "" ||
 		extractNodeText(doc, "h1", secondFactorHeaderJp) != "" {
@@ -353,7 +356,7 @@ func (kc *Client) loadChallengePage(submitURL string, referer string, authForm u
 			return kc.loadResponsePage(secondActionURL, submitURL, responseForm)
 		case strings.Contains(secondActionURL, "challenge/ipp"): // handle SMS challenge
 
-			if extractNodeText(doc, "button", "Send text message") != "" {
+			if extractNodeText(doc, "button", "Send") != "" {
 				responseForm.Set("SendMethod", "SMS") // extractInputsByFormID does not extract the name and value from <button> tag that is the form submit
 				doc, err = kc.loadResponsePage(secondActionURL, submitURL, responseForm)
 				if err != nil {
@@ -453,8 +456,6 @@ func (kc *Client) loadChallengePage(submitURL string, referer string, authForm u
 
 		return kc.skipChallengePage(doc, submitURL, secondActionURL, loginDetails)
 
-	} else if extractNodeText(doc, "h2", "To sign in to your Google Account, choose a task from the list below.") != "" {
-		return kc.loadChallengeEntryPage(doc, submitURL, loginDetails)
 	}
 
 	return doc, nil
@@ -506,35 +507,72 @@ func (kc *Client) loadAlternateChallengePage(submitURL string, referer string, a
 }
 
 func (kc *Client) loadChallengeEntryPage(doc *goquery.Document, submitURL string, loginDetails *creds.LoginDetails) (*goquery.Document, error) {
-	var challengeEntry string
+	// var challengeEntry string
 
-	doc.Find("form[data-challengeentry]").EachWithBreak(func(i int, s *goquery.Selection) bool {
-		action, ok := s.Attr("action")
-		if !ok {
-			return true
-		}
+	logger.Debugf("on challenge entry page!")
+	// TODO clean all this up and add tests
 
-		if strings.Contains(action, "challenge/totp/") ||
-			strings.Contains(action, "challenge/ipp/") ||
-			strings.Contains(action, "challenge/az/") ||
-			strings.Contains(action, "challenge/skotp/") {
+	// doc.Find("form[data-challengeentry]").EachWithBreak(func(i int, s *goquery.Selection) bool {
+	// 	action, ok := s.Attr("action")
+	// 	if !ok {
+	// 		return true
+	// 	}
 
-			challengeEntry, _ = s.Attr("data-challengeentry")
-			return false
-		}
+	// 	if strings.Contains(action, "challenge/totp/") ||
+	// 		strings.Contains(action, "challenge/ipp/") ||
+	// 		strings.Contains(action, "challenge/az/") ||
+	// 		strings.Contains(action, "challenge/skotp/") {
 
-		return true
-	})
+	// 		challengeEntry, _ = s.Attr("data-challengeentry")
+	// 		return false
+	// 	}
 
-	if challengeEntry == "" {
-		return nil, errors.New("unable to find supported second factor")
-	}
+	// 	return true
+	// })
 
-	query := fmt.Sprintf(`[data-challengeentry="%s"]`, challengeEntry)
+	// if challengeEntry == "" {
+	// 	return nil, errors.New("unable to find supported second factor")
+	// }
+
+	// query := fmt.Sprintf(`[data-challengeentry="%s"]`, challengeEntry)
+	query := ""
 	responseForm, newActionURL, err := extractInputsByFormQuery(doc, query)
 	if err != nil {
 		return nil, errors.Wrap(err, "unable to extract challenge form")
 	}
+	challengeOptions := doc.Find("div[data-challengeid]")
+	supportedChallengeIDs := make([]string, 0)
+	challengeOptions.Each(func(i int, s *goquery.Selection) {
+		text := s.Text()
+		logger.Debugf("2fa option text: %s", text)
+		// TODO is there a better way to match on these? The data-chalenegeid attribute seems to change values per method
+		// TODO security key? SMS was a quick fix, maybe security key is as well?
+		if strings.Contains(text, "Tap Yes on your phone or tablet") || strings.Contains(text, "Get a verification code from the Google Authenticator app") || strings.Contains(text, "Get a verification code at") {
+			challengeID, _ := s.Attr("data-challengeid")
+			logger.Debugf("adding supported challenge")
+			supportedChallengeIDs = append(supportedChallengeIDs, challengeID)
+		}
+	})
+	logger.Debugf("supported") // TODO clean up all these debug statements
+	if len(supportedChallengeIDs) == 0 {
+		return nil, errors.New("unable to find supported second factor")
+	}
+	supportedChallengeID := supportedChallengeIDs[0] // TODO how do we pick which one to use? This wasn't previously prompting
+	// challengeIDs := challengeOptions.Map(func(i int, s *goquery.Selection) string {
+	// 	challengeID, _ := s.Attr("data-challengeid")
+	// 	return challengeID
+	// })
+	// logger.Debugf("challengeIDs: %s", challengeIDs)
+
+	// for _, challengeID := range challengeIDs {
+	// 	if challengeID == "4" || challengeID == "8" {
+	// 		supportedChallengeID = challengeID
+	// 		break
+	// 	}
+	// }
+
+	logger.Debugf("challengeID: %s", supportedChallengeID)
+	responseForm.Set("challenge", fmt.Sprintf("%s,undefined", supportedChallengeID)) // first one
 
 	return kc.loadChallengePage(newActionURL, submitURL, responseForm, loginDetails)
 }
